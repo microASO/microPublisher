@@ -11,3 +11,6 @@ def publishInDBS3():
     userDN = request.args.get("DN", "")
 
     return userDN   
+
+if __name__ == '__main__':
+    app.run(host= '0.0.0.0', port=8443,debug=True)
