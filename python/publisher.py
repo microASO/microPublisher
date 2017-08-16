@@ -1,8 +1,9 @@
 from flask import Flask, request
+import os
 import pycurl
 import urllib
 import dbs.apis.dbsClient as dbsClient
-from ServerUtilities import getColumn, getHashLfn, PUBLICATIONDB_STATUSES, encodeRequest, oracleOutputMapping
+from ServerUtilities import getHashLfn, PUBLICATIONDB_STATUSES, encodeRequest, oracleOutputMapping
 from RESTInteractions import HTTPRequests
 
 app = Flask(__name__)
@@ -14,7 +15,7 @@ def getProxy(userDN, logger):
     with open('userProxy', 'w') as f:
         c.setopt(c.WRITEFUNCTION, f.write)
         c.perform()
-    c.Close()
+    c.close()
 
     return "userProxy"
 
@@ -34,15 +35,16 @@ def publishInDBS3():
 
     proxy = getProxy(userDN, logger)
 
-    oracelInstance = ""
+    oracelInstance = "cmsweb.cern.ch"
     oracleDB = HTTPRequests(oracelInstance,
                             proxy,
                             proxy)
 
-    inputDataset = toPublish[0]["outputdataset"]
+    inputDataset = toPublish[0]["outdataset"]
 
+    # TODO: take it automatically
     # inputdbsurl = souceURL
-    sourceURL = ""
+    sourceURL = "https://cmsweb.cern.ch/dbs/prod/global/DBSReader"
     if not sourceURL.endswith(READ_PATH) and not sourceURL.endswith(READ_PATH_1):
         sourceURL += READ_PATH
 
@@ -53,11 +55,11 @@ def publishInDBS3():
     globalURL = globalURL.replace('phys03', 'global')
     globalURL = globalURL.replace('caf', 'global')
 
-    #proxy = os.environ.get("SOCKS5_PROXY")
-    logger.debug(wfnamemsg+"Source API URL: %s" % sourceURL)
-    sourceApi = dbsClient.DbsApi(url=sourceURL, proxy=proxy)
-    logger.debug(wfnamemsg+"Global API URL: %s" % globalURL)
-    globalApi = dbsClient.DbsApi(url=globalURL, proxy=proxy)
+    pr =  os.environ.get("SOCKS5_PROXY")
+    logger.info(wfnamemsg+"Source API URL: %s" % sourceURL)
+    sourceApi = dbsClient.DbsApi(url=sourceURL, proxy=pr)
+    logger.info(wfnamemsg+"Global API URL: %s" % globalURL)
+    globalApi = dbsClient.DbsApi(url=globalURL, proxy=pr)
 
     # TODO: take it from taskDB tm_publish_dbs_url for that task
     #
@@ -65,15 +67,16 @@ def publishInDBS3():
     fileDoc['workflow'] = workflow
     fileDoc['subresource'] = 'getpublishurl'
 
-    publish_dbs_url = "DUMMY"
-    try:
-        result = oracleDB.post(oracelInstance,
-                               data=encodeRequest(fileDoc))
-        logger.debug("Got DBS API URL: %s " % result[0]["result"][0][0])
-        #[{"result": [["https://cmsweb.cern.ch/dbs/prod/phys03/DBSWriter"]]}, 200, "OK"]
-        publish_dbs_url = result[0]["result"][0][0]
-    except Exception:
-        logger.exception("Failed to retrieve DBS API URL for DB, fallback to central config: %s" % publish_dbs_url)
+    publish_dbs_url = "https://cmsweb.cern.ch/dbs/prod/phys03/DBSWriter"
+    # TODO!!!!!
+    #try:
+    #    result = oracleDB.post(oracelInstance,
+    #                           data=encodeRequest(fileDoc))
+    #    logger.debug("Got DBS API URL: %s " % result[0]["result"][0][0])
+    #    #[{"result": [["https://cmsweb.cern.ch/dbs/prod/phys03/DBSWriter"]]}, 200, "OK"]
+    #    publish_dbs_url = result[0]["result"][0][0]
+    #except Exception:
+    #    logger.exception("Failed to retrieve DBS API URL for DB, fallback to central config: %s" % publish_dbs_url)
 
     WRITE_PATH = "/DBSWriter"
     MIGRATE_PATH = "/DBSMigrate"
@@ -88,11 +91,12 @@ def publishInDBS3():
         publish_dbs_url += WRITE_PATH
 
     logger.debug(wfnamemsg+"Destination API URL: %s" % publish_dbs_url)
-    destApi = dbsClient.DbsApi(url=publish_dbs_url, proxy=proxy)
+    destApi = dbsClient.DbsApi(url=publish_dbs_url, proxy=pr)
     logger.debug(wfnamemsg+"Destination read API URL: %s" % publish_read_url)
-    destReadApi = dbsClient.DbsApi(url=publish_read_url, proxy=proxy)
+    destReadApi = dbsClient.DbsApi(url=publish_read_url, proxy=pr)
     logger.debug(wfnamemsg+"Migration API URL: %s" % publish_migrate_url)
-    migrateApi = dbsClient.DbsApi(url=publish_migrate_url, proxy=proxy)
+    migrateApi = dbsClient.DbsApi(url=publish_migrate_url, proxy=pr)
+
 
     noInput = len(inputDataset.split("/")) <= 3
     if not noInput:
@@ -115,8 +119,8 @@ def publishInDBS3():
 
     acquisition_era_name = "CRAB"
     processing_era_config = {'processing_version': 1, 'description': 'CRAB3_processing_era'}
-    
-
+    """    
+    """
     return userDN   
 
 if __name__ == '__main__':
