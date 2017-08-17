@@ -1,6 +1,7 @@
 from flask import Flask, request
 import os
 import logging
+import sys
 import json
 import pycurl
 import urllib
@@ -23,9 +24,8 @@ def getProxy(userDN, logger):
 
 @app.before_first_request
 def setup_logging():
-    if not app.debug:
             # In production mode, add log handler to sys.stderr.
-            app.logger.addHandler(logging.StreamHandler())
+            app.logger.addHandler(logging.StreamHandler(sys.stdout))
             app.logger.setLevel(logging.INFO)
 
 @app.route('/dbspublish', methods=['POST'])
@@ -119,11 +119,8 @@ def publishInDBS3():
 
     logger.info("inputDataset: %s" % inputDataset)
     noInput = len(inputDataset.split("/")) <= 3
-    global_tag = 'crab3_tag'
-    primary_ds_type = 'mc'
 
-    # evaluate later
-    """
+    # TODO: fix dbs dep
     if not noInput:
         existing_datasets = sourceApi.listDatasets(dataset=inputDataset, detail=True, dataset_access_type='*')
         primary_ds_type = existing_datasets[0]['primary_ds_type']
@@ -141,12 +138,11 @@ def publishInDBS3():
         logger.info(wfnamemsg+msg)
         primary_ds_type = 'mc'
         global_tag = 'crab3_tag'
-    """
 
     acquisition_era_name = "CRAB"
     processing_era_config = {'processing_version': 1, 'description': 'CRAB3_processing_era'}
 
-    empty, primName, procName, tier = toPublish['outdataset'].split('/')
+    empty, primName, procName, tier = toPublish[0]['outdataset'].split('/')
 
     primds_config = {'primary_ds_name': primName, 'primary_ds_type': primary_ds_type}
     msg = "About to insert primary dataset: %s" % (str(primds_config))
@@ -154,8 +150,6 @@ def publishInDBS3():
     destApi.insertPrimaryDataset(primds_config)
     msg = "Successfully inserted primary dataset %s." % (primName)
     logger.debug(wfnamemsg+msg)
-
-
 
     logger.info('FINISHED')
     return "FINISHED"   
