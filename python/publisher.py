@@ -146,7 +146,7 @@ def publishInDBS3():
     acquisition_era_name = "CRAB"
     processing_era_config = {'processing_version': 1, 'description': 'CRAB3_processing_era'}
 
-    empty, primName, procName, tier = toPublish[outdataset].split('/')
+    empty, primName, procName, tier = toPublish['outdataset'].split('/')
 
     primds_config = {'primary_ds_name': primName, 'primary_ds_type': primary_ds_type}
     msg = "About to insert primary dataset: %s" % (str(primds_config))
