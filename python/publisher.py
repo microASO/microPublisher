@@ -43,30 +43,16 @@ def publishInDBS3():
 
     # TODO: grouping 2 taskname
     fileDoc = dict()
-    fileDoc['asoworker'] = 'asoprod1'
-    fileDoc['subresource'] = 'acquiredPublication'
-    fileDoc['grouping'] = 2
-    fileDoc['username'] = user
-    fileDoc['taskname'] = workflow
+    fileDoc['subresource'] = 'search'
+    fileDoc['workflow'] = workflow
+
     try:
-        results = oracleDB.get('filetransfers',
-                                    data=encodeRequest(fileDoc))
-        toPub_docs = oracleOutputMapping(results)
+        results = oracleDB.get('/crabserver/preprod/tasks',
+                                data=encodeRequest(fileDoc))
+        #toPub_docs = oracleOutputMapping(results)
     except Exception:
         logger.error("Failed to get acquired publications from oracleDB: %s" % ex)
 
-    active_ = [{'key': [x['username'],
-                        x['user_group'],
-                        x['user_role'],
-                        x['taskname']],
-                'value': [x['destination'],
-                          x['source_lfn'],
-                          x['destination_lfn'],
-                          x['input_dataset'],
-                          x['dbs_url'],
-                          x['last_update']
-                         ]}
-                for x in toPub_docs if x['transfer_state']==3 and x['publication_state'] not in [2,3,5]]
 
     inputDataset = active_[0]["value"][3]
     sourceURL = active_[0]["value"][4]
