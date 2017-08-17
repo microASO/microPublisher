@@ -26,6 +26,7 @@ def publishInDBS3():
     """
     toPublish = request.json
     userDN = request.args.get("DN", "")
+    user = request.args.get("User", "")
     workflow = toPublish[0]["taskname"]
     wfnamemsg = "%s: " % (workflow)
     logger = app.logger
@@ -40,11 +41,37 @@ def publishInDBS3():
                             proxy,
                             proxy)
 
-    inputDataset = toPublish[0]["outdataset"]
+    # TODO: grouping 2 taskname
+    fileDoc = dict()
+    fileDoc['asoworker'] = 'asoprod1'
+    fileDoc['subresource'] = 'acquiredPublication'
+    fileDoc['grouping'] = 2
+    fileDoc['username'] = user
+    fileDoc['taskname'] = workflow
+    try:
+        results = oracleDB.get('filetransfers',
+                                    data=encodeRequest(fileDoc))
+        toPub_docs = oracleOutputMapping(results)
+    except Exception:
+        logger.error("Failed to get acquired publications from oracleDB: %s" % ex)
 
-    # TODO: take it automatically
-    # inputdbsurl = souceURL
-    sourceURL = "https://cmsweb.cern.ch/dbs/prod/global/DBSReader"
+    active_ = [{'key': [x['username'],
+                        x['user_group'],
+                        x['user_role'],
+                        x['taskname']],
+                'value': [x['destination'],
+                          x['source_lfn'],
+                          x['destination_lfn'],
+                          x['input_dataset'],
+                          x['dbs_url'],
+                          x['last_update']
+                         ]}
+                for x in toPub_docs if x['transfer_state']==3 and x['publication_state'] not in [2,3,5]]
+
+    inputDataset = active_[0]["value"][3]
+    sourceURL = active_[0]["value"][4]
+
+    #sourceURL = "https://cmsweb.cern.ch/dbs/prod/global/DBSReader"
     if not sourceURL.endswith(READ_PATH) and not sourceURL.endswith(READ_PATH_1):
         sourceURL += READ_PATH
 
@@ -97,7 +124,7 @@ def publishInDBS3():
     logger.debug(wfnamemsg+"Migration API URL: %s" % publish_migrate_url)
     migrateApi = dbsClient.DbsApi(url=publish_migrate_url, proxy=pr)
 
-
+    # TODO: fix taking inputdataset
     noInput = len(inputDataset.split("/")) <= 3
     if not noInput:
         existing_datasets = sourceApi.listDatasets(dataset=inputDataset, detail=True, dataset_access_type='*')
