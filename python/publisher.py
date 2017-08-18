@@ -1,5 +1,7 @@
 from flask import Flask, request
 import os
+import uuid
+import time
 import logging
 import sys
 import json
@@ -293,9 +295,9 @@ def requestBlockMigration(workflow, migrateApi, sourceApi, block):
                 logger.error(wfnamemsg+msg)
     return reqid, atDestination, alreadyQueued
 
+# In production mode, add log handler to sys.stderr.
 @app.before_first_request
 def setup_logging():
-            # In production mode, add log handler to sys.stderr.
             app.logger.addHandler(logging.StreamHandler(sys.stdout))
             app.logger.setLevel(logging.INFO)
 
@@ -308,6 +310,7 @@ def publishInDBS3():
     toPublish = request.get_json()
     userDN = request.args.get("DN", "")
     user = request.args.get("User", "")
+    pnn = request.args.get("Destination", "")
     workflow = toPublish[0]["taskname"]
     if not workflow:
         logger.info("NO TASKNAME: %s" % toPublish[0])
@@ -339,7 +342,7 @@ def publishInDBS3():
     except Exception as ex:
         logger.error("Failed to get acquired publications from oracleDB for %s: %s" % (workflow, ex))
 
-    #logger.info(results[0]['desc']['columns'])
+    logger.info(results[0]['desc']['columns'])
 
     try:
         inputDatasetIndex = results[0]['desc']['columns'].index("tm_input_dataset")
@@ -381,23 +384,31 @@ def publishInDBS3():
         publish_read_url = publish_dbs_url + READ_PATH
         publish_dbs_url += WRITE_PATH
 
-    logger.debug(wfnamemsg+"Destination API URL: %s" % publish_dbs_url)
-    destApi = dbsClient.DbsApi(url=publish_dbs_url, proxy=pr)
-    logger.debug(wfnamemsg+"Destination read API URL: %s" % publish_read_url)
-    destReadApi = dbsClient.DbsApi(url=publish_read_url, proxy=pr)
-    logger.debug(wfnamemsg+"Migration API URL: %s" % publish_migrate_url)
-    migrateApi = dbsClient.DbsApi(url=publish_migrate_url, proxy=pr)
+    try:
+        logger.debug(wfnamemsg+"Destination API URL: %s" % publish_dbs_url)
+        destApi = dbsClient.DbsApi(url=publish_dbs_url, proxy=pr)
+        logger.debug(wfnamemsg+"Destination read API URL: %s" % publish_read_url)
+        destReadApi = dbsClient.DbsApi(url=publish_read_url, proxy=pr)
+        logger.debug(wfnamemsg+"Migration API URL: %s" % publish_migrate_url)
+        migrateApi = dbsClient.DbsApi(url=publish_migrate_url, proxy=pr)
+    except:
+        logger.exception('Wrong DBS URL')
+        return "FAILED"
 
     logger.info("inputDataset: %s" % inputDataset)
     noInput = len(inputDataset.split("/")) <= 3
 
     # TODO: fix dbs dep
     if not noInput:
-        existing_datasets = sourceApi.listDatasets(dataset=inputDataset, detail=True, dataset_access_type='*')
-        primary_ds_type = existing_datasets[0]['primary_ds_type']
-        # There's little chance this is correct, but it's our best guess for now.
-        # CRAB2 uses 'crab2_tag' for all cases
-        existing_output = destReadApi.listOutputConfigs(dataset=inputDataset)
+        try:
+            existing_datasets = sourceApi.listDatasets(dataset=inputDataset, detail=True, dataset_access_type='*')
+            primary_ds_type = existing_datasets[0]['primary_ds_type']
+            # There's little chance this is correct, but it's our best guess for now.
+            # CRAB2 uses 'crab2_tag' for all cases
+            existing_output = destReadApi.listOutputConfigs(dataset=inputDataset)
+        except:
+            logger.exception('Wrong DBS URL')
+            return "FAILED"
         if not existing_output:
             msg = "Unable to list output config for input dataset %s." % (inputDataset)
             logger.error(wfnamemsg+msg)
@@ -413,6 +424,17 @@ def publishInDBS3():
     acquisition_era_name = "CRAB"
     processing_era_config = {'processing_version': 1, 'description': 'CRAB3_processing_era'}
 
+    appName = 'cmsRun'
+    appVer = toPublish[0]["swversion"]
+    pset_hash = toPublish[0]['publishname'].split("-")[-1]
+    gtag = str(toPublish[0]['globaltag'])
+    if gtag == "None":
+        gtag = global_tag
+    try:
+        acquisitionera = str(toPublish[0]['acquisitionera'])
+    except:
+        acquisitionera = acquisition_era_name
+
     empty, primName, procName, tier = toPublish[0]['outdataset'].split('/')
 
     primds_config = {'primary_ds_name': primName, 'primary_ds_type': primary_ds_type}
@@ -424,7 +446,7 @@ def publishInDBS3():
 
     final = {}
     failed = []
-    failed_reason = []
+    failed_reason = '' 
     publish_in_next_iteration = []
     published = []
 
@@ -443,17 +465,17 @@ def publishInDBS3():
         msg += "\n%s" % (str(traceback.format_exc()))
         logger.error(wfnamemsg+msg)
         return "FAILED"
-    
+   
     # check if actions are needed
     workToDo = False
 
     for fileTo in toPublish:
-        if fileTO['lfn'] not in existingFilesValid:
+        if fileTo['lfn'] not in existingFilesValid:
             workToDo = True
         
     if not workToDo:
         msg = "Nothing uploaded, %s has these files already or not enough files." % (dataset)
-        self.logger.info(wfnamemsg+msg)
+        logger.info(wfnamemsg+msg)
         return "NOTHING TO DO"
 
     acquisition_era_config = {'acquisition_era_name': acquisitionera, 'start_date': 0}
@@ -542,7 +564,7 @@ def publishInDBS3():
                         file['parents'].remove(parentFile)
             # Add this file to the list of files to be published.
             dbsFiles.append(format_file_3(file))
-        published[dataset].append(file['lfn'])
+        published.append(file['lfn'])
     # Print a message with the number of files to publish.
     msg = "Found %d files not already present in DBS which will be published." % (len(dbsFiles))
     logger.info(wfnamemsg+msg)
@@ -569,10 +591,10 @@ def publishInDBS3():
         if statusCode:
             failureMsg += " Not publishing any files."
             logger.info(wfnamemsg+failureMsg)
-            failed[dataset].extend([f['logical_file_name'] for f in dbsFiles])
-            failure_reason[dataset] = failureMsg
-            published[dataset] = [x for x in published[dataset] if x not in failed[dataset]]
-            continue
+            failed.extend([f['logical_file_name'] for f in dbsFiles])
+            failure_reason = failureMsg
+            published = [x for x in published[dataset] if x not in failed[dataset]]
+            return "NOTHING TO DO"
     # Then migrate the parent blocks that are in the global DBS instance.
     if globalParentBlocks:
         msg = "List of parent blocks that need to be migrated from %s:\n%s" % (globalApi.url, globalParentBlocks)
@@ -581,10 +603,10 @@ def publishInDBS3():
         if statusCode:
             failureMsg += " Not publishing any files."
             logger.info(wfnamemsg+failureMsg)
-            failed[dataset].extend([f['logical_file_name'] for f in dbsFiles])
-            failure_reason[dataset] = failureMsg
-            published[dataset] = [x for x in published[dataset] if x not in failed[dataset]]
-            continue
+            failed.extend([f['logical_file_name'] for f in dbsFiles])
+            failure_reason = failureMsg
+            published = [x for x in published[dataset] if x not in failed[dataset]]
+            return "NOTHING TO DO"
     # Publish the files in blocks. The blocks must have exactly max_files_per_block
     # files, unless there are less than max_files_per_block files to publish to
     # begin with. If there are more than max_files_per_block files to publish,
@@ -604,23 +626,25 @@ def publishInDBS3():
             blockDump = createBulkBlock(output_config, processing_era_config,
                                                 primds_config, dataset_config,
                                                 acquisition_era_config, block_config, files_to_publish)
-            #self.logger.debug(wfnamemsg+"Block to insert: %s\n %s" % (blockDump, destApi.__dict__ ))
-            destApi.insertBulkBlock(blockDump)
+            #logger.debug(wfnamemsg+"Block to insert: %s\n %s" % (blockDump, destApi.__dict__ ))
+            
+            # TODO: uncomment to enable publication
+            #destApi.insertBulkBlock(blockDump)
             block_count += 1
         except Exception as ex:
             logger.error("Error for files: %s" % [f['logical_file_name'] for f in files_to_publish])
-            failed[dataset].extend([f['logical_file_name'] for f in files_to_publish])
+            failed.extend([f['logical_file_name'] for f in files_to_publish])
             msg = "Error when publishing (%s) " % ", ".join(failed)
             msg += str(ex)
             msg += str(traceback.format_exc())
             logger.error(wfnamemsg+msg)
             failure_reason = str(ex)
-        count += self.max_files_per_block
-        files_to_publish_next = dbsFiles[count:count+self.max_files_per_block]
+        count += max_files_per_block
+        files_to_publish_next = dbsFiles[count:count+max_files_per_block]
         if len(files_to_publish_next) < max_files_per_block:
             publish_in_next_iteration.extend([f['logical_file_name'] for f in files_to_publish_next])
             break
-    published = [x for x in published if x not in failed + publish_in_next_iteration
+    published = [x for x in published if x not in failed + publish_in_next_iteration]
     # Fill number of files/blocks published for this dataset.
     final['files'] = len(dbsFiles) - len(failed) - len(publish_in_next_iteration)
     final['blocks'] = block_count
@@ -632,7 +656,6 @@ def publishInDBS3():
                                                     publish_in_next_iteration)
     msg += ", results %s" % (final)
     logger.info(wfnamemsg+msg)
-
 
     logger.info('FINISHED')
     return "FINISHED"   
