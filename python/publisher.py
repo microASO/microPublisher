@@ -30,13 +30,13 @@ def format_file_3(file):
     format file for DBS
     """
     nf = {'logical_file_name': file['lfn'],
-            'file_type': 'EDM',
-            'check_sum': unicode(file['cksum']),
-            'event_count': file['inevents'],
-            'file_size': file['filesize'],
-            'adler32': file['adler32'],
-            'file_parent_list': [{'file_parent_lfn': i} for i in set(file['parents'])],
-            }
+          'file_type': 'EDM',
+          'check_sum': unicode(file['cksum']),
+          'event_count': file['inevents'],
+          'file_size': file['filesize'],
+          'adler32': file['adler32'],
+          'file_parent_list': [{'file_parent_lfn': i} for i in set(file['parents'])],
+         }
     file_lumi_list = []
     for run, lumis in file['runlumi'].items():
         for lumi in lumis:
@@ -59,7 +59,7 @@ def createBulkBlock(output_config, processing_era_config, primds_config, \
         file_conf['lfn'] = file['logical_file_name']
         for parent_lfn in file.get('file_parent_list', []):
             file_parent_list.append({'logical_file_name': file['logical_file_name'],
-                                        'parent_logical_file_name': parent_lfn['file_parent_lfn']})
+                                     'parent_logical_file_name': parent_lfn['file_parent_lfn']})
         del file['file_parent_list']
     blockDump = {
         'dataset_conf_list': [output_config],
@@ -298,8 +298,8 @@ def requestBlockMigration(workflow, migrateApi, sourceApi, block):
 # In production mode, add log handler to sys.stderr.
 @app.before_first_request
 def setup_logging():
-            app.logger.addHandler(logging.StreamHandler(sys.stdout))
-            app.logger.setLevel(logging.INFO)
+    app.logger.addHandler(logging.StreamHandler(sys.stdout))
+    app.logger.setLevel(logging.INFO)
 
 @app.route('/dbspublish', methods=['POST'])
 def publishInDBS3():
@@ -314,7 +314,7 @@ def publishInDBS3():
     workflow = toPublish[0]["taskname"]
     if not workflow:
         logger.info("NO TASKNAME: %s" % toPublish[0])
-    for k,v in toPublish[0].iteritems():
+    for k, v in toPublish[0].iteritems():
         if k == 'taskname':
             logger.info("Starting: %s: %s" % (k, v))
     wfnamemsg = "%s: " % (workflow)
@@ -338,7 +338,7 @@ def publishInDBS3():
 
     try:
         results = oracleDB.get('/crabserver/preprod/task',
-                                data=encodeRequest(fileDoc))
+                               data=encodeRequest(fileDoc))
     except Exception as ex:
         logger.error("Failed to get acquired publications from oracleDB for %s: %s" % (workflow, ex))
 
@@ -366,7 +366,7 @@ def publishInDBS3():
     globalURL = globalURL.replace('phys03', 'global')
     globalURL = globalURL.replace('caf', 'global')
 
-    pr =  os.environ.get("SOCKS5_PROXY")
+    pr = os.environ.get("SOCKS5_PROXY")
     logger.info(wfnamemsg+"Source API URL: %s" % sourceURL)
     sourceApi = dbsClient.DbsApi(url=sourceURL, proxy=pr)
     logger.info(wfnamemsg+"Global API URL: %s" % globalURL)
@@ -446,7 +446,7 @@ def publishInDBS3():
 
     final = {}
     failed = []
-    failed_reason = '' 
+    failed_reason = ''
     publish_in_next_iteration = []
     published = []
 
@@ -465,14 +465,14 @@ def publishInDBS3():
         msg += "\n%s" % (str(traceback.format_exc()))
         logger.error(wfnamemsg+msg)
         return "FAILED"
-   
+
     # check if actions are needed
     workToDo = False
 
     for fileTo in toPublish:
         if fileTo['lfn'] not in existingFilesValid:
             workToDo = True
-        
+
     if not workToDo:
         msg = "Nothing uploaded, %s has these files already or not enough files." % (dataset)
         logger.info(wfnamemsg+msg)
@@ -481,22 +481,22 @@ def publishInDBS3():
     acquisition_era_config = {'acquisition_era_name': acquisitionera, 'start_date': 0}
 
     output_config = {'release_version': appVer,
-                        'pset_hash': pset_hash,
-                        'app_name': appName,
-                        'output_module_label': 'o', #TODO
-                        'global_tag': global_tag,
+                     'pset_hash': pset_hash,
+                     'app_name': appName,
+                     'output_module_label': 'o',
+                     'global_tag': global_tag,
                     }
     msg = "Published output config."
     logger.debug(wfnamemsg+msg)
 
     dataset_config = {'dataset': dataset,
-                        'processed_ds_name': procName,
-                        'data_tier_name': tier,
-                        'acquisition_era_name': acquisitionera,
-                        'dataset_access_type': 'VALID', # TODO
-                        'physics_group_name': 'CRAB3',
-                        'last_modification_date': int(time.time()),
-                        }
+                      'processed_ds_name': procName,
+                      'data_tier_name': tier,
+                      'acquisition_era_name': acquisitionera,
+                      'dataset_access_type': 'VALID',
+                      'physics_group_name': 'CRAB3',
+                      'last_modification_date': int(time.time()),
+                     }
     msg = "About to insert dataset: %s" % (str(dataset_config))
     logger.info(wfnamemsg+msg)
     del dataset_config['acquisition_era_name']
@@ -582,12 +582,12 @@ def publishInDBS3():
         msg = "List of parent blocks that need to be migrated from %s:\n%s" % (sourceApi.url, localParentBlocks)
         logger.info(wfnamemsg+msg)
         statusCode, failureMsg = migrateByBlockDBS3(workflow,
-                                                            migrateApi,
-                                                            destReadApi,
-                                                            sourceApi,
-                                                            inputDataset,
-                                                            localParentBlocks
-                                                            )
+                                                    migrateApi,
+                                                    destReadApi,
+                                                    sourceApi,
+                                                    inputDataset,
+                                                    localParentBlocks
+                                                   )
         if statusCode:
             failureMsg += " Not publishing any files."
             logger.info(wfnamemsg+failureMsg)
@@ -621,13 +621,13 @@ def publishInDBS3():
         try:
             block_config = {'block_name': block_name, 'origin_site_name': pnn, 'open_for_writing': 0}
             msg = "Inserting files %s into block %s." % ([f['logical_file_name']
-                                                            for f in files_to_publish], block_name)
+                                                          for f in files_to_publish], block_name)
             logger.debug(wfnamemsg+msg)
             blockDump = createBulkBlock(output_config, processing_era_config,
-                                                primds_config, dataset_config,
-                                                acquisition_era_config, block_config, files_to_publish)
+                                        primds_config, dataset_config,
+                                        acquisition_era_config, block_config, files_to_publish)
             #logger.debug(wfnamemsg+"Block to insert: %s\n %s" % (blockDump, destApi.__dict__ ))
-            
+
             # TODO: uncomment to enable publication
             #destApi.insertBulkBlock(blockDump)
             block_count += 1
@@ -658,7 +658,7 @@ def publishInDBS3():
     logger.info(wfnamemsg+msg)
 
     logger.info('FINISHED')
-    return "FINISHED"   
+    return "FINISHED"
 
 if __name__ == '__main__':
-    app.run(host= '0.0.0.0', port=8443,debug=True)
+    app.run(host='0.0.0.0', port=8443, debug=True)
