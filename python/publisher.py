@@ -14,11 +14,11 @@ from RESTInteractions import HTTPRequests
 
 app = Flask(__name__)
 
-def getProxy(userDN, logger):
+def getProxy(userDN, id_, logger):
     params = {'DN': userDN}
     c = pycurl.Curl()
-    c.setopt(c.URL, 'http://asotest3:5000/getproxy'+ '?' + urllib.urlencode(params))
-    with open('userProxy', 'w') as f:
+    c.setopt(c.URL, 'http://127.0.0.1:8443/getproxy'+ '?' + urllib.urlencode(params))
+    with open('userProxy_'+id_, 'w') as f:
         c.setopt(c.WRITEFUNCTION, f.write)
         c.perform()
     c.close()
@@ -307,11 +307,16 @@ def publishInDBS3():
 
     """
     logger = app.logger
-    toPublish = request.get_json()
-    userDN = request.args.get("DN", "")
-    user = request.args.get("User", "")
-    pnn = request.args.get("Destination", "")
+    req = request.form.to_dict()
+    logger.info("Starting: %s " % req)
+    payload = request.files["Payload"]
+    toPublish = json.loads(payload.read())
+    #logger.info("Type: %s " % toPublish)
+    userDN = req["DN"]
+    user = req["User"]
+    pnn = req["Destination"]
     workflow = toPublish[0]["taskname"]
+
     if not workflow:
         logger.info("NO TASKNAME: %s" % toPublish[0])
     for k, v in toPublish[0].iteritems():
@@ -324,10 +329,16 @@ def publishInDBS3():
     READ_PATH = "/DBSReader"
     READ_PATH_1 = "/DBSReader/"
 
-    opsProxy = '/home/dciangot/proxy'
-    proxy = getProxy(userDN, logger)
+    opsProxy = '/data/srv/asyncstageout/state/asyncstageout/creds/OpsProxy'
 
-    oracelInstance = "cmsweb-testbed.cern.ch"
+    if not os.path.isfile("userProxy_"+user):
+	    try:
+		proxy = getProxy(userDN, user, logger)
+	    except:
+		logger.exception("Failed to retrieve user proxy")
+
+    logger.info("userProxy_"+user)
+    oracelInstance = "vocms035.cern.ch"
     oracleDB = HTTPRequests(oracelInstance,
                             opsProxy,
                             opsProxy)
@@ -336,8 +347,9 @@ def publishInDBS3():
     fileDoc['subresource'] = 'search'
     fileDoc['workflow'] = workflow
 
+
     try:
-        results = oracleDB.get('/crabserver/preprod/task',
+        results = oracleDB.get('/crabserver/dev/task',
                                data=encodeRequest(fileDoc))
     except Exception as ex:
         logger.error("Failed to get acquired publications from oracleDB for %s: %s" % (workflow, ex))
@@ -392,7 +404,7 @@ def publishInDBS3():
         logger.debug(wfnamemsg+"Migration API URL: %s" % publish_migrate_url)
         migrateApi = dbsClient.DbsApi(url=publish_migrate_url, proxy=pr)
     except:
-        logger.exception('Wrong DBS URL')
+        logger.exception('Wrong DBS URL %s' % publish_dbs_url)
         return "FAILED"
 
     logger.info("inputDataset: %s" % inputDataset)
@@ -407,7 +419,7 @@ def publishInDBS3():
             # CRAB2 uses 'crab2_tag' for all cases
             existing_output = destReadApi.listOutputConfigs(dataset=inputDataset)
         except:
-            logger.exception('Wrong DBS URL')
+            logger.exception('Wrong DBS URL %s' % publish_dbs_url)
             return "FAILED"
         if not existing_output:
             msg = "Unable to list output config for input dataset %s." % (inputDataset)
@@ -622,14 +634,14 @@ def publishInDBS3():
             block_config = {'block_name': block_name, 'origin_site_name': pnn, 'open_for_writing': 0}
             msg = "Inserting files %s into block %s." % ([f['logical_file_name']
                                                           for f in files_to_publish], block_name)
-            logger.debug(wfnamemsg+msg)
+            logger.info(wfnamemsg+msg)
             blockDump = createBulkBlock(output_config, processing_era_config,
                                         primds_config, dataset_config,
                                         acquisition_era_config, block_config, files_to_publish)
             #logger.debug(wfnamemsg+"Block to insert: %s\n %s" % (blockDump, destApi.__dict__ ))
 
             # TODO: uncomment to enable publication
-            #destApi.insertBulkBlock(blockDump)
+            destApi.insertBulkBlock(blockDump)
             block_count += 1
         except Exception as ex:
             logger.error("Error for files: %s" % [f['logical_file_name'] for f in files_to_publish])
@@ -661,4 +673,4 @@ def publishInDBS3():
     return "FINISHED"
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8443, debug=True)
+    app.run(host='0.0.0.0', port=8888, debug=True)
