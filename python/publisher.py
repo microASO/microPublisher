@@ -1,4 +1,3 @@
-from flask import Flask, request
 import os
 import uuid
 import time
@@ -8,11 +7,11 @@ import json
 import pycurl
 import traceback
 import urllib
+import argparse
 import dbs.apis.dbsClient as dbsClient
 from ServerUtilities import getHashLfn, PUBLICATIONDB_STATUSES, encodeRequest, oracleOutputMapping
 from RESTInteractions import HTTPRequests
 
-app = Flask(__name__)
 
 def getProxy(userDN, id_, logger):
     params = {'DN': userDN}
@@ -295,27 +294,102 @@ def requestBlockMigration(workflow, migrateApi, sourceApi, block):
                 logger.error(wfnamemsg+msg)
     return reqid, atDestination, alreadyQueued
 
-# In production mode, add log handler to sys.stderr.
-@app.before_first_request
-def setup_logging():
-    app.logger.addHandler(logging.StreamHandler(sys.stdout))
-    app.logger.setLevel(logging.INFO)
 
-@app.route('/dbspublish', methods=['POST'])
-def publishInDBS3():
+def mark_good(workflow, files, oracleDB, logger):
+    """
+    Mark the list of files as tranferred
+    """
+    wfnamemsg = "%s: " % workflow
+    last_update = int(time.time())
+    for lfn in files:
+        data = {}
+        source_lfn = lfn
+        docId = getHashLfn(source_lfn)
+        msg = "Marking file %s as published." % lfn
+        msg += " Document id: %s (source LFN: %s)." % (docId, source_lfn)
+        logger.info(wfnamemsg+msg)
+        data['asoworker'] = 'asodciangot1'
+        data['subresource'] = 'updatePublication'
+        data['list_of_ids'] = docId
+        data['list_of_publication_state'] = 'DONE'
+        data['list_of_retry_value'] = 1
+        data['list_of_failure_reason'] = ''
+
+        try:
+            result = oracleDB.post('/crabserver/dev/filetransfers',
+                                   data=encodeRequest(data))
+            logger.debug("updated: %s %s " % (docId,result))
+        except Exception as ex:
+            logger.error("Error during status update: %s" %ex)
+
+
+def mark_failed(workflow, files, oracleDB, logger, failure_reason="", force_failure=False ):
+    """
+    Something failed for these files so increment the retry count
+    """
+    wfnamemsg = "%s: " % workflow
+    now = str(datetime.datetime.now())
+    last_update = int(time.time())
+    h = 0
+    for lfn in files:
+        h += 1
+        logger.debug("Marking failed %s" % h)
+        source_lfn = lfn
+        docId = getHashLfn(source_lfn)
+        logger.debug("Marking failed %s" % docId)
+        try:
+            docbyId = oracleDB.get('/crabserver/dev/fileusertransfers',
+                                   data=encodeRequest({'subresource': 'getById', 'id': docId}))
+        except Exception:
+            logger.exception("Error updating failed docs.")
+            continue
+        document = oracleOutputMapping(docbyId, None)[0]
+        logger.debug("Document: %s" % document)
+
+        try:
+            fileDoc = dict()
+            fileDoc['asoworker'] = 'asodciangot1'
+            fileDoc['subresource'] = 'updatePublication'
+            fileDoc['list_of_ids'] = docId
+
+            fileDoc['list_of_publication_state'] = 'FAILED'
+            #if force_failure or document['publish_retry_count'] > self.max_retry:
+            #    fileDoc['list_of_publication_state'] = 'FAILED'
+            #else:
+            #    fileDoc['list_of_publication_state'] = 'RETRY'
+            # TODO: implement retry
+            fileDoc['list_of_retry_value'] = 1
+            fileDoc['list_of_failure_reason'] = failure_reason
+
+            logger.debug("fileDoc: %s " % fileDoc)
+
+            result = oracleDB.post('/crabserver/dev/fileusertransfers',
+                                   data=encodeRequest(fileDoc))
+            logger.debug("updated: %s " % docId)
+        except Exception as ex:
+            msg = "Error updating document"
+            msg += str(ex)
+            msg += str(traceback.format_exc())
+            logger.error(msg)
+            continue
+
+
+def publishInDBS3( taskname ):
     """
 
     """
-    logger = app.logger
-    req = request.form.to_dict()
-    logger.info("Starting: %s " % req)
-    payload = request.files["Payload"]
-    toPublish = json.loads(payload.read())
-    #logger.info("Type: %s " % toPublish)
-    userDN = req["DN"]
-    user = req["User"]
-    pnn = req["Destination"]
-    workflow = toPublish[0]["taskname"]
+    logger = logging.getLogger(taskname)
+    logging.basicConfig(filename=taskname+'.log', level=logging.INFO)
+
+
+    logger.info("Getting files to publish")
+
+    toPublish = []
+    # TODO move from new to done when processed
+    with open("/tmp/"+taskname+".json") as f:
+        toPublish = json.load(f)
+
+    workflow = taskname 
 
     if not workflow:
         logger.info("NO TASKNAME: %s" % toPublish[0])
@@ -324,6 +398,9 @@ def publishInDBS3():
             logger.info("Starting: %s: %s" % (k, v))
     wfnamemsg = "%s: " % (workflow)
 
+    user = toPublish[0]["User"]
+    userDN = toPublish[0]["UserDN"]
+    pnn = toPublish[0]["Destination"]
     logger.info(wfnamemsg+" "+user)
 
     READ_PATH = "/DBSReader"
@@ -515,6 +592,7 @@ def publishInDBS3():
 
     # List of all files that must (and can) be published.
     dbsFiles = []
+    dbsFiles_f = []
     # Set of all the parent files from all the files requested to be published.
     parentFiles = set()
     # Set of parent files for which the migration to the destination DBS instance
@@ -529,6 +607,7 @@ def publishInDBS3():
 
     # Loop over all files to publish.
     for file in toPublish:
+        logger.info(file)
         # Check if this file was already published and if it is valid.
         if file['lfn'] not in existingFilesValid:
             # We have a file to publish.
@@ -576,13 +655,14 @@ def publishInDBS3():
                         file['parents'].remove(parentFile)
             # Add this file to the list of files to be published.
             dbsFiles.append(format_file_3(file))
-        published.append(file['lfn'])
+            dbsFiles_f.append(file)
+        published.append(file['SourceLFN'])
     # Print a message with the number of files to publish.
     msg = "Found %d files not already present in DBS which will be published." % (len(dbsFiles))
     logger.info(wfnamemsg+msg)
 
     # If there are no files to publish, continue with the next dataset.
-    if len(dbsFiles) == 0:
+    if len(dbsFiles_f) == 0:
         msg = "Nothing to do for this dataset."
         logger.info(wfnamemsg+msg)
         return "NOTHING TO DO"
@@ -603,7 +683,7 @@ def publishInDBS3():
         if statusCode:
             failureMsg += " Not publishing any files."
             logger.info(wfnamemsg+failureMsg)
-            failed.extend([f['logical_file_name'] for f in dbsFiles])
+            failed.extend([f['SourceLFN'] for f in dbsFiles_f])
             failure_reason = failureMsg
             published = [x for x in published[dataset] if x not in failed[dataset]]
             return "NOTHING TO DO"
@@ -615,7 +695,7 @@ def publishInDBS3():
         if statusCode:
             failureMsg += " Not publishing any files."
             logger.info(wfnamemsg+failureMsg)
-            failed.extend([f['logical_file_name'] for f in dbsFiles])
+            failed.extend([f['SourceLFN'] for f in dbsFiles_f])
             failure_reason = failureMsg
             published = [x for x in published[dataset] if x not in failed[dataset]]
             return "NOTHING TO DO"
@@ -644,17 +724,17 @@ def publishInDBS3():
             destApi.insertBulkBlock(blockDump)
             block_count += 1
         except Exception as ex:
-            logger.error("Error for files: %s" % [f['logical_file_name'] for f in files_to_publish])
-            failed.extend([f['logical_file_name'] for f in files_to_publish])
+            logger.error("Error for files: %s" % [f['SourceLFN'] for f in toPublish])
+            failed.extend([f['SourceLFN'] for f in toPublish])
             msg = "Error when publishing (%s) " % ", ".join(failed)
             msg += str(ex)
             msg += str(traceback.format_exc())
             logger.error(wfnamemsg+msg)
             failure_reason = str(ex)
         count += max_files_per_block
-        files_to_publish_next = dbsFiles[count:count+max_files_per_block]
+        files_to_publish_next = dbsFiles_f[count:count+max_files_per_block]
         if len(files_to_publish_next) < max_files_per_block:
-            publish_in_next_iteration.extend([f['logical_file_name'] for f in files_to_publish_next])
+            publish_in_next_iteration.extend([f["SourceLFN"] for f in files_to_publish_next])
             break
     published = [x for x in published if x not in failed + publish_in_next_iteration]
     # Fill number of files/blocks published for this dataset.
@@ -669,8 +749,25 @@ def publishInDBS3():
     msg += ", results %s" % (final)
     logger.info(wfnamemsg+msg)
 
-    logger.info('FINISHED')
-    return "FINISHED"
+     
+    try:
+        if published:
+            mark_good(workflow, published, oracleDB, logger)
+        if failed:
+            logger.debug("Failed files: %s " % failed)
+            force_failure = result[dataset].get('force_failure', False)
+            mark_failed(workflow, failed, oracleDB, logger, failure_reason, force_failure)
+    except:
+        logger.exception("Status update failed")
+
+    return 0
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8888, debug=True)
+    
+    parser = argparse.ArgumentParser(description='Publish datasets.')
+    parser.add_argument('taskname', metavar='taskname', type=str, help='taskname')
+
+    args = parser.parse_args()
+
+    print publishInDBS3( args.taskname )
+
