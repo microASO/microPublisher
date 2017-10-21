@@ -12,6 +12,12 @@ import logging
 import os
 import multiprocessing
 import subprocess
+import traceback
+import sys
+import cStringIO
+import json
+import datetime
+import time
 from multiprocessing import Pool
 from MultiProcessingLog import MultiProcessingLog
 from logging.handlers import TimedRotatingFileHandler
@@ -20,8 +26,23 @@ from WMCore.WMFactory import WMFactory
 from WMCore.Database.CMSCouch import CouchServer
 from WMCore.Configuration import loadConfigurationFile
 
+from WMCore.Services.pycurl_manager import RequestHandler
 from RESTInteractions import HTTPRequests
+from AsyncStageOut import getDNFromUserName
 from ServerUtilities import encodeRequest, oracleOutputMapping
+from ServerUtilities import executeCommand, getColumn, getHashLfn, PUBLICATIONDB_STATUSES, encodeRequest, oracleOutputMapping
+
+def setProcessLogger(name):
+    """ Set the logger for a single process. The file used for it is logs/processes/proc.name.txt and it
+        can be retrieved with logging.getLogger(name) in other parts of the code
+    """
+    logger = logging.getLogger(name)
+    handler = TimedRotatingFileHandler('logs/processes/proc.c3id_%s.pid_%s.txt' % (name, os.getpid()), 'midnight', backupCount=30)
+    formatter = logging.Formatter("%(asctime)s:%(levelname)s:%(module)s:%(message)s")
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+
+    return logger
 
 
 class Worker(object):
@@ -33,6 +54,10 @@ class Worker(object):
         Initialise class members
         """
         self.config = config.General
+        self.max_files_per_block = 100
+        self.userProxy = self.config.opsProxy
+        self.block_publication_timeout = 3600
+        self.lfn_map = {}
         #TODO: logger!
         def createLogdir(dirname):
             """ Create the directory dirname ignoring erors in case it exists. Exit if
@@ -76,18 +101,7 @@ class Worker(object):
             logger.debug("Logging level initialized to %s.", loglevel)
             return logger
 
-        def setProcessLogger(name):
-            """ Set the logger for a single process. The file used for it is logs/processes/proc.name.txt and it
-                can be retrieved with logging.getLogger(name) in other parts of the code
-            """
-            logger = logging.getLogger(name)
-            handler = TimedRotatingFileHandler('logs/processes/proc.c3id_%s.pid_%s.txt' % (name, os.getpid()), 'midnight', backupCount=30)
-            formatter = logging.Formatter("%(asctime)s:%(levelname)s:%(module)s:%(message)s")
-            handler.setFormatter(formatter)
-            logger.addHandler(handler)
-
-            return logger
-
+        self.cache_area = self.config.cache_area
         self.logger = setRootLogger(quiet, True)
 
         try:
@@ -98,6 +112,14 @@ class Worker(object):
         except:
             self.logger.exception('Failed when contacting Oracle')
             raise
+
+        try:
+            self.connection = RequestHandler(config={'timeout': 900, 'connecttimeout' : 900})
+        except Exception as ex:
+            msg = "Error initializing the connection"
+            msg += str(ex)
+            msg += str(traceback.format_exc())
+            self.logger.debug(msg)
 
         self.pool = Pool(processes=4)
 
@@ -166,10 +188,10 @@ class Worker(object):
         self.pool.map(self.startSlave, tasks)
 
 
-    def startSlave(task):
+    def startSlave(self, task):
         # - process logger
         logger = setProcessLogger(str(task))
-        logger.info("Process %s is starting. PID %s", procnum, os.getpid())
+        logger.info("Process %s is starting. PID %s", task, os.getpid())
 
         self.force_publication = False
         workflow = str(task[0][3])
@@ -190,7 +212,8 @@ class Worker(object):
             msg = "Retrieving status from %s" % (url)
             logger.info(wfnamemsg+msg)
             buf = cStringIO.StringIO()
-            header = {"Content-Type ":"application/json"}
+            header = {"Content-Type":"application/json"}
+            data = {'workflow': workflow, 'subresource': 'taskads'}
             try:
                 _, res_ = self.connection.request(url,
                                                   data,
@@ -203,34 +226,7 @@ class Worker(object):
                 if self.config.isOracle:
                     logger.exception('Error retrieving status from cache.')
                     return 
-                else:
-                    msg = "Error retrieving status from cache. Fall back to user cache area"
-                    msg += str(ex)
-                    msg += str(traceback.format_exc())
-                    logger.error(wfnamemsg+msg)
-                    query = {'key': self.user}
-                    try:
-                        self.user_cache_area = self.db.loadView('DBSPublisher', 'cache_area', query)['rows']
-                    except Exception as ex:
-                        msg = "Error getting user cache_area"
-                        msg += str(ex)
-                        msg += str(traceback.format_exc())
-                        logger.error(msg)
 
-                    self.cache_area = self.user_cache_area[0]['value'][0]+self.user_cache_area[0]['value'][1]+'/filemetadata'
-                    try:
-                        _, res_ = self.connection.request(url,
-                                                          data,
-                                                          header,
-                                                          doseq=True,
-                                                          ckey=self.userProxy,
-                                                          cert=self.userProxy
-                                                     )#, verbose=True)# for debug
-                    except Exception as ex:
-                        msg = "Error retrieving status from user cache area."
-                        msg += str(ex)
-                        msg += str(traceback.format_exc())
-                        logger.error(wfnamemsg+msg)
             msg = "Status retrieved from cache. Loading task status."
             logger.info(wfnamemsg+msg)
             try:
@@ -266,27 +262,20 @@ class Worker(object):
                 # should be more or less independent of the output dataset in case there are
                 # more than one).
                 last_publication_time = None
-                if not self.config.isOracle:
-                    query = {'reduce': True, 'key': user_wf['key']}
-                    try:
-                        last_publication_time = self.db.loadView('DBSPublisher', 'last_publication', query)['rows']
-                    except Exception as ex:
-                        msg = "Cannot get last publication time for %s: %s" % (user_wf['key'], ex)
-                        logger.error(wfnamemsg+msg)
-                else:
-                    data['workflow'] = workflow
-                    data['subresource'] = 'search'
-                    try:
-                        result = self.oracleDB.get(self.config.oracleFileTrans.replace('filetransfers','task'),
-                                                   data=encodeRequest(data))
-                        logger.debug("task: %s " %  str(result[0]))
-                        logger.debug("task: %s " %  getColumn(result[0],'tm_last_publication'))
-                    except Exception as ex:
-                        logger.error("Error during task doc retrieving: %s" %ex)
-                    if last_publication_time:
-                        date = oracleOutputMapping(result)['last_publication']
-                        seconds = datetime.strptime(date, "%Y-%m-%d %H:%M:%S.%f").timetuple()
-                        last_publication_time = time.mktime(seconds)
+                data = {}
+                data['workflow'] = workflow
+                data['subresource'] = 'search'
+                try:
+                    result = self.oracleDB.get(self.config.oracleFileTrans.replace('filetransfers','task'),
+                                                data=encodeRequest(data))
+                    logger.debug("task: %s " %  str(result[0]))
+                    logger.debug("task: %s " %  getColumn(result[0],'tm_last_publication'))
+                except Exception as ex:
+                    logger.error("Error during task doc retrieving: %s" %ex)
+                if last_publication_time:
+                    date = oracleOutputMapping(result)['last_publication']
+                    seconds = datetime.strptime(date, "%Y-%m-%d %H:%M:%S.%f").timetuple()
+                    last_publication_time = time.mktime(seconds)
 
                 msg = "Last publication time: %s." % str(last_publication_time)
                 logger.debug(wfnamemsg+msg)
@@ -303,6 +292,7 @@ class Worker(object):
                     logger.debug(wfnamemsg+msg)
                     # If the last publication was long time ago (> our block publication timeout),
                     # go ahead and publish.
+                    now = int(time.time()) - time.timezone
                     time_since_last_publication = now - last
                     hours = int(time_since_last_publication/60/60)
                     minutes = int((time_since_last_publication - hours*60*60)/60)
