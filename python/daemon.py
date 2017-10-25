@@ -18,7 +18,7 @@ import cStringIO
 import json
 import datetime
 import time
-from multiprocessing import Pool
+from multiprocessing import Process
 from MultiProcessingLog import MultiProcessingLog
 from logging.handlers import TimedRotatingFileHandler
 
@@ -38,7 +38,7 @@ def setProcessLogger(name):
     """
     logger = logging.getLogger(name)
     handler = TimedRotatingFileHandler('logs/processes/proc.c3id_%s.pid_%s.txt' % (name, os.getpid()), 'midnight', backupCount=30)
-    formatter = logging.Formatter("%(asctime)s:%(levelname)s:%(module)s:%(message)s")
+    formatter = logging.Formatter("%(asctime)s:%(levelname)s:%(module)s:"+name+":%(message)s")
     handler.setFormatter(formatter)
     logger.addHandler(handler)
 
@@ -121,7 +121,6 @@ class Worker(object):
             msg += str(traceback.format_exc())
             self.logger.debug(msg)
 
-        self.pool = Pool(processes=4)
 
     def active_tasks(self, db):
         active_users = []
@@ -175,6 +174,51 @@ class Worker(object):
             info.append([x for x in result if x['taskname']==task[3]])
         return zip(unique_tasks, info)
 
+    def getPublDescFiles(self, workflow, lfn_ready):
+        """
+        Download and read the files describing
+        what needs to be published
+        """
+        wfnamemsg = "%s: " % workflow
+        buf = cStringIO.StringIO()
+        header = {"Content-Type ": "application/json"}
+
+        # FIXME: with lfn list returns empty
+        #data = {'taskname': workflow, 'filetype': 'EDM', 'lfn': lfn_ready}
+        data = {'taskname': workflow, 'filetype': 'EDM'}
+        url = self.cache_area
+        msg = "Retrieving data from %s" % (url)
+        self.logger.info(wfnamemsg+msg)
+        try:
+            _, res_ = self.connection.request(url, data, header, doseq=True, ckey=self.userProxy, cert=self.userProxy)#, verbose=True)# for debug
+        except Exception as ex:
+            msg = "Error retrieving data."
+            msg += str(ex)
+            msg += str(traceback.format_exc())
+            self.logger.error(wfnamemsg+msg)
+            return {}
+        msg = "Loading results."
+        #print res_
+        self.logger.info(wfnamemsg+msg)
+        try:
+            buf.close()
+            res = json.loads(res_)
+        except Exception as ex:
+            msg = "Error loading results. Trying next time!"
+            msg += str(ex)
+            msg += str(traceback.format_exc())
+            self.logger.error(wfnamemsg+msg)
+            return {}
+
+        out = []
+        for obj in res['result']:
+            if isinstance(obj, dict):
+                out.append(obj)
+            else:
+                #print type(obj)
+                out.append(json.loads(str(obj)))
+        return out
+
     def algorithm(self, parameters=None):
         """
         1. Get a list of users with files to publish from the couchdb instance
@@ -184,14 +228,26 @@ class Worker(object):
         tasks = self.active_tasks(self.oracleDB)
 
         self.logger.debug('kicking off pool %s' % [x[0][3] for x in tasks])
+        
+        processes = []
 
-        self.pool.map(self.startSlave, tasks)
+        try:
+            for task in tasks:
+                p = Process(target=self.startSlave, args=(task,))
+                p.start()
+                processes.append(p)
+
+            for proc in processes:
+                proc.join()
+        except:
+            self.logger.exception("Error during process mapping")
 
 
     def startSlave(self, task):
+        # TODO: lock task!
         # - process logger
-        logger = setProcessLogger(str(task))
-        logger.info("Process %s is starting. PID %s", task, os.getpid())
+        logger = setProcessLogger(str(task[0][3]))
+        logger.info("Process %s is starting. PID %s", task[0][3], os.getpid())
 
         self.force_publication = False
         workflow = str(task[0][3])
@@ -213,7 +269,7 @@ class Worker(object):
             logger.info(wfnamemsg+msg)
             buf = cStringIO.StringIO()
             header = {"Content-Type":"application/json"}
-            data = {'workflow': workflow, 'subresource': 'taskads'}
+            data = {'workflow': workflow}#, 'subresource': 'taskads'}
             try:
                 _, res_ = self.connection.request(url,
                                                   data,
@@ -225,7 +281,7 @@ class Worker(object):
             except Exception as ex:
                 if self.config.isOracle:
                     logger.exception('Error retrieving status from cache.')
-                    return 
+                    return 0 
 
             msg = "Status retrieved from cache. Loading task status."
             logger.info(wfnamemsg+msg)
@@ -308,66 +364,90 @@ class Worker(object):
                         msg += " Not enough to force publication."
                     logger.info(wfnamemsg+msg)
 
-            if self.force_publication:
-                # - get info
-                active_ = [{'key': [x['username'],
-                                    x['user_group'],
-                                    x['user_role'],
-                                    x['taskname']],
-                            'value': [x['destination'],
-                                      x['source_lfn'],
-                                      x['destination_lfn'],
-                                      x['input_dataset'],
-                                      x['dbs_url'],
-                                      x['last_update']
-                                     ]}
-                           for x in task[1] if x['transfer_state']==3 and x['publication_state'] not in [2,3,5]]
-               
-                logger.debug(active_)
+            #logger.info(task[1])
+            try:
+                if self.force_publication:
+                    # - get info
+                    active_ = [{'key': [x['username'],
+                                        x['user_group'],
+                                        x['user_role'],
+                                        x['taskname']],
+                                'value': [x['destination'],
+                                          x['source_lfn'],
+                                          x['destination_lfn'],
+                                          x['input_dataset'],
+                                          x['dbs_url'],
+                                          x['last_update']
+                                         ]}
+                               for x in task[1] if x['transfer_state']==3 and x['publication_state'] not in [2,3,5]]
+                   
+                    lfn_ready = [] 
+                    wf_jobs_endtime = []
+                    pnn, input_dataset, input_dbs_url = "", "", ""
+                    for active_file in active_:
+                        job_end_time = active_file['value'][5]
+                        if job_end_time and self.config.isOracle:
+                            wf_jobs_endtime.append(int(job_end_time) - time.timezone)
+                        elif job_end_time:
+                            wf_jobs_endtime.append(int(time.mktime(time.strptime(str(job_end_time), '%Y-%m-%d %H:%M:%S'))) - time.timezone)
+                        source_lfn = active_file['value'][1]
+                        dest_lfn = active_file['value'][2]
+                        self.lfn_map[dest_lfn] = source_lfn
+                        if not pnn or not input_dataset or not input_dbs_url:
+                            pnn = str(active_file['value'][0])
+                            input_dataset = str(active_file['value'][3])
+                            input_dbs_url = str(active_file['value'][4])
+                        filename = os.path.basename(dest_lfn)
+                        left_piece, jobid_fileext = filename.rsplit('_', 1)
+                        if '.' in jobid_fileext:
+                            fileext = jobid_fileext.rsplit('.', 1)[-1]
+                            orig_filename = left_piece + '.' + fileext
+                        else:
+                            orig_filename = left_piece
+                        lfn_ready.append(dest_lfn)
+                    
+                    userDN = ''
+                    username = task[0][0]
+                    user_group = ""
+                    if task[0][1]:
+                        user_group =  task[0][1]
+                    user_role = ""
+                    if task[0][2]:
+                        user_role =  task[0][2]
+                    logger.debug("Trying to get DN %s %s %s" % (username,user_group,user_role))
 
-                lfn_ready = {}
-                wf_jobs_endtime = []
-                pnn, input_dataset, input_dbs_url = "", "", ""
-                for active_file in active_:
-                    job_end_time = active_file['value'][5]
-                    if job_end_time and self.config.isOracle:
-                        wf_jobs_endtime.append(int(job_end_time) - time.timezone)
-                    elif job_end_time:
-                        wf_jobs_endtime.append(int(time.mktime(time.strptime(str(job_end_time), '%Y-%m-%d %H:%M:%S'))) - time.timezone)
-                    source_lfn = active_file['value'][1]
-                    dest_lfn = active_file['value'][2]
-                    self.lfn_map[dest_lfn] = source_lfn
-                    if not pnn or not input_dataset or not input_dbs_url:
-                        pnn = str(active_file['value'][0])
-                        input_dataset = str(active_file['value'][3])
-                        input_dbs_url = str(active_file['value'][4])
-                    filename = os.path.basename(dest_lfn)
-                    left_piece, jobid_fileext = filename.rsplit('_', 1)
-                    if '.' in jobid_fileext:
-                        fileext = jobid_fileext.rsplit('.', 1)[-1]
-                        orig_filename = left_piece + '.' + fileext
-                    else:
-                        orig_filename = left_piece
-                    lfn_ready.setdefault(orig_filename, []).append(dest_lfn)
+                    try:
+                        userDN = getDNFromUserName(username, logger)
+                    except Exception as ex:
+                        msg = "Error retrieving the user DN"
+                        msg += str(ex)
+                        msg += str(traceback.format_exc())
+                        logger.error(msg)
+                        init = False
+                        return 1
 
-                logger.info("%s %s %s %s %s" % (workflow, input_dataset, input_dbs_url, pnn, lfn_ready))    
-                
-                userDN = ''
-                logger.debug("Trying to get DN")
-                try:
-                    userDN = getDNFromUserName((task[0],task[1],task[2]), logger)
-                except Exception as ex:
-                    msg = "Error retrieving the user DN"
-                    msg += str(ex)
-                    msg += str(traceback.format_exc())
-                    logger.error(msg)
-                    init = False
-                    return 1
+                    # Get metadata
+                    toPublish = []
+                    publDescFiles_list = self.getPublDescFiles(workflow, lfn_ready)
+                    for file_ in active_:
+                        for i, doc in enumerate(publDescFiles_list):
+                            logger.info(type(doc))
+                            logger.info(doc)
+                            if doc["lfn"] == file_["value"][2]:
+                                doc["User"] = username
+                                doc["UserDN"] = userDN
+                                doc["Destination"] = file_["value"][0]
+                                doc["SourceLFN"] = file_["value"][1]
+                                toPublish.append(doc)
+                    with open("/tmp/"+workflow+'.json', 'w') as outfile:
+                        json.dump(toPublish, outfile)
 
-                # - dump info file {UserDN,User,Destination=pnn, task[1]}
-                logger.info("%s %s %s %s" % (task[0], userDN, pnn, task[1]))
-        # POpen
-        #subprocess.call(["publisher.sh", user, userDN, dumpPath])
+            except:
+                logger.exception("Exception!")
+
+
+            logger.info(". publisher.sh %s" % (workflow))
+            subprocess.call(["/bin/bash","/data/user/MicroASO/microPublisher/python/publisher.sh", workflow])
         return 0
 
 
@@ -375,4 +455,6 @@ if __name__ == '__main__':
 
     configuration = loadConfigurationFile( os.path.abspath('config.py') )
     master = Worker(configuration, False)
-    master.algorithm()
+    while(True):
+        master.algorithm()
+        time.sleep(15)

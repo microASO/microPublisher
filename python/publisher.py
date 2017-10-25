@@ -656,6 +656,7 @@ def publishInDBS3( taskname ):
             # Add this file to the list of files to be published.
             dbsFiles.append(format_file_3(file))
             dbsFiles_f.append(file)
+        print file
         published.append(file['SourceLFN'])
     # Print a message with the number of files to publish.
     msg = "Found %d files not already present in DBS which will be published." % (len(dbsFiles))
