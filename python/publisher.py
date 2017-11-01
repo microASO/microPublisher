@@ -17,7 +17,7 @@ from RESTInteractions import HTTPRequests
 
 
 def Proxy(userDN, group, role, logger):
-    params = {'DN': userDN}
+    userProxy = ''
 
     try:
         serviceCert = '/data/certs/hostcert.pem'
@@ -31,7 +31,7 @@ def Proxy(userDN, group, role, logger):
                              'uisource': "/data/srv/tmp.sh"
                             }
 
-        cache_area = 'https://cmsweb-testbed.cern.ch/crabserver/preprod/filemetadata'
+        cache_area = 'https://vocms035.cern.ch/crabserver/dev/filemetadata'
         getCache = re.compile('https?://([^/]*)/.*')
         myproxyAccount = getCache.findall(cache_area)[0]
         defaultDelegation['myproxyAccount'] = myproxyAccount
@@ -43,6 +43,8 @@ def Proxy(userDN, group, role, logger):
         defaultDelegation['userDN'] = userDN
         defaultDelegation['group'] = group
         defaultDelegation['role'] = role
+
+        print group, role
         valid, proxy = getProxy(defaultDelegation, logger)
     except Exception as ex:
         msg = "Error getting the user proxy"
@@ -55,7 +57,7 @@ def Proxy(userDN, group, role, logger):
     else:
         logger.error('Did not get valid proxy.')
 
-    logger.info("%s" % userProxy)
+    logger.info("userProxy: %s" % userProxy)
 
     return userProxy 
 
@@ -438,6 +440,18 @@ def publishInDBS3( taskname ):
     wfnamemsg = "%s: " % (workflow)
 
     user = toPublish[0]["User"]
+    try:
+        group = toPublish[0]["Group"]
+        role = toPublish[0]["Role"]
+    except:
+        group = ""
+        role = ""
+
+    if not group or group in ['null']:
+        group = ""
+    if not role or role in ['null']:
+        role = ""
+
     userDN = toPublish[0]["UserDN"]
     pnn = toPublish[0]["Destination"]
     logger.info(wfnamemsg+" "+user)
@@ -447,11 +461,11 @@ def publishInDBS3( taskname ):
 
     opsProxy = '/data/srv/asyncstageout/state/asyncstageout/creds/OpsProxy'
 
-    if not os.path.isfile("userProxy_"+user):
-        try:
-            proxy = Proxy(userDN, group, role, logger)
-        except:
-            logger.exception("Failed to retrieve user proxy")
+    # TODO: get user role and group
+    try:
+        proxy = Proxy(userDN, group, role, logger)
+    except:
+        logger.exception("Failed to retrieve user proxy")
 
     logger.info("userProxy_"+user)
     oracelInstance = "vocms035.cern.ch"

@@ -364,90 +364,92 @@ class Worker(object):
                         msg += " Not enough to force publication."
                     logger.info(wfnamemsg+msg)
 
-            #logger.info(task[1])
-            try:
-                if self.force_publication:
-                    # - get info
-                    active_ = [{'key': [x['username'],
-                                        x['user_group'],
-                                        x['user_role'],
-                                        x['taskname']],
-                                'value': [x['destination'],
-                                          x['source_lfn'],
-                                          x['destination_lfn'],
-                                          x['input_dataset'],
-                                          x['dbs_url'],
-                                          x['last_update']
-                                         ]}
-                               for x in task[1] if x['transfer_state']==3 and x['publication_state'] not in [2,3,5]]
-                   
-                    lfn_ready = [] 
-                    wf_jobs_endtime = []
-                    pnn, input_dataset, input_dbs_url = "", "", ""
-                    for active_file in active_:
-                        job_end_time = active_file['value'][5]
-                        if job_end_time and self.config.isOracle:
-                            wf_jobs_endtime.append(int(job_end_time) - time.timezone)
-                        elif job_end_time:
-                            wf_jobs_endtime.append(int(time.mktime(time.strptime(str(job_end_time), '%Y-%m-%d %H:%M:%S'))) - time.timezone)
-                        source_lfn = active_file['value'][1]
-                        dest_lfn = active_file['value'][2]
-                        self.lfn_map[dest_lfn] = source_lfn
-                        if not pnn or not input_dataset or not input_dbs_url:
-                            pnn = str(active_file['value'][0])
-                            input_dataset = str(active_file['value'][3])
-                            input_dbs_url = str(active_file['value'][4])
-                        filename = os.path.basename(dest_lfn)
-                        left_piece, jobid_fileext = filename.rsplit('_', 1)
-                        if '.' in jobid_fileext:
-                            fileext = jobid_fileext.rsplit('.', 1)[-1]
-                            orig_filename = left_piece + '.' + fileext
-                        else:
-                            orig_filename = left_piece
-                        lfn_ready.append(dest_lfn)
-                    
-                    userDN = ''
-                    username = task[0][0]
-                    user_group = ""
-                    if task[0][1]:
-                        user_group =  task[0][1]
-                    user_role = ""
-                    if task[0][2]:
-                        user_role =  task[0][2]
-                    logger.debug("Trying to get DN %s %s %s" % (username,user_group,user_role))
+        #logger.info(task[1])
+        try:
+            if self.force_publication:
+                # - get info
+                active_ = [{'key': [x['username'],
+                                    x['user_group'],
+                                    x['user_role'],
+                                    x['taskname']],
+                            'value': [x['destination'],
+                                      x['source_lfn'],
+                                      x['destination_lfn'],
+                                      x['input_dataset'],
+                                      x['dbs_url'],
+                                      x['last_update']
+                                     ]}
+                           for x in task[1] if x['transfer_state']==3 and x['publication_state'] not in [2,3,5]]
+               
+                lfn_ready = [] 
+                wf_jobs_endtime = []
+                pnn, input_dataset, input_dbs_url = "", "", ""
+                for active_file in active_:
+                    job_end_time = active_file['value'][5]
+                    if job_end_time and self.config.isOracle:
+                        wf_jobs_endtime.append(int(job_end_time) - time.timezone)
+                    elif job_end_time:
+                        wf_jobs_endtime.append(int(time.mktime(time.strptime(str(job_end_time), '%Y-%m-%d %H:%M:%S'))) - time.timezone)
+                    source_lfn = active_file['value'][1]
+                    dest_lfn = active_file['value'][2]
+                    self.lfn_map[dest_lfn] = source_lfn
+                    if not pnn or not input_dataset or not input_dbs_url:
+                        pnn = str(active_file['value'][0])
+                        input_dataset = str(active_file['value'][3])
+                        input_dbs_url = str(active_file['value'][4])
+                    filename = os.path.basename(dest_lfn)
+                    left_piece, jobid_fileext = filename.rsplit('_', 1)
+                    if '.' in jobid_fileext:
+                        fileext = jobid_fileext.rsplit('.', 1)[-1]
+                        orig_filename = left_piece + '.' + fileext
+                    else:
+                        orig_filename = left_piece
+                    lfn_ready.append(dest_lfn)
+                
+                userDN = ''
+                username = task[0][0]
+                user_group = ""
+                if task[0][1]:
+                    user_group =  task[0][1]
+                user_role = ""
+                if task[0][2]:
+                    user_role =  task[0][2]
+                logger.debug("Trying to get DN %s %s %s" % (username,user_group,user_role))
 
-                    try:
-                        userDN = getDNFromUserName(username, logger)
-                    except Exception as ex:
-                        msg = "Error retrieving the user DN"
-                        msg += str(ex)
-                        msg += str(traceback.format_exc())
-                        logger.error(msg)
-                        init = False
-                        return 1
+                try:
+                    userDN = getDNFromUserName(username, logger)
+                except Exception as ex:
+                    msg = "Error retrieving the user DN"
+                    msg += str(ex)
+                    msg += str(traceback.format_exc())
+                    logger.error(msg)
+                    init = False
+                    return 1
 
-                    # Get metadata
-                    toPublish = []
-                    publDescFiles_list = self.getPublDescFiles(workflow, lfn_ready)
-                    for file_ in active_:
-                        for i, doc in enumerate(publDescFiles_list):
-                            #logger.info(type(doc))
-                            #logger.info(doc)
-                            if doc["lfn"] == file_["value"][2]:
-                                doc["User"] = username
-                                doc["UserDN"] = userDN
-                                doc["Destination"] = file_["value"][0]
-                                doc["SourceLFN"] = file_["value"][1]
-                                toPublish.append(doc)
-                    with open("/tmp/"+workflow+'.json', 'w') as outfile:
-                        json.dump(toPublish, outfile)
+                # Get metadata
+                toPublish = []
+                publDescFiles_list = self.getPublDescFiles(workflow, lfn_ready)
+                for file_ in active_:
+                    for i, doc in enumerate(publDescFiles_list):
+                        #logger.info(type(doc))
+                        #logger.info(doc)
+                        if doc["lfn"] == file_["value"][2]:
+                            doc["User"] = username
+                            doc["Group"] = file_["key"][1]
+                            doc["Role"] = file_["key"][2]
+                            doc["UserDN"] = userDN
+                            doc["Destination"] = file_["value"][0]
+                            doc["SourceLFN"] = file_["value"][1]
+                            toPublish.append(doc)
+                with open("/tmp/"+workflow+'.json', 'w') as outfile:
+                    json.dump(toPublish, outfile)
+                logger.info(". publisher.sh %s" % (workflow))
+                subprocess.call(["/bin/bash","/data/user/MicroASO/microPublisher/python/publisher.sh", workflow])
 
-            except:
-                logger.exception("Exception!")
+        except:
+            logger.exception("Exception!")
 
 
-            logger.info(". publisher.sh %s" % (workflow))
-            subprocess.call(["/bin/bash","/data/user/MicroASO/microPublisher/python/publisher.sh", workflow])
         return 0
 
 
