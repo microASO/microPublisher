@@ -8,6 +8,7 @@ import pycurl
 import traceback
 import urllib
 import argparse
+import datetime
 import dbs.apis.dbsClient as dbsClient
 from ServerUtilities import getHashLfn, PUBLICATIONDB_STATUSES, encodeRequest, oracleOutputMapping
 from RESTInteractions import HTTPRequests
@@ -363,11 +364,11 @@ def mark_failed(workflow, files, oracleDB, logger, failure_reason="", force_fail
 
             logger.debug("fileDoc: %s " % fileDoc)
 
-            result = oracleDB.post('/crabserver/dev/fileusertransfers',
+            result = oracleDB.post('/crabserver/dev/filetransfers',
                                    data=encodeRequest(fileDoc))
             logger.debug("updated: %s " % docId)
         except Exception as ex:
-            msg = "Error updating document"
+            msg = "Error updating document: %s" % fileDoc
             msg += str(ex)
             msg += str(traceback.format_exc())
             logger.error(msg)
@@ -381,7 +382,7 @@ def publishInDBS3( taskname ):
     logger = logging.getLogger(taskname)
     logging.basicConfig(filename=taskname+'.log', level=logging.INFO)
 
-
+    
     logger.info("Getting files to publish")
 
     toPublish = []
@@ -520,7 +521,10 @@ def publishInDBS3( taskname ):
     if gtag == "None":
         gtag = global_tag
     try:
-        acquisitionera = str(toPublish[0]['acquisitionera'])
+        if toPublish[0]['acquisitionera'] and not toPublish[0]['acquisitionera'] in ["null"]:
+            acquisitionera = str(toPublish[0]['acquisitionera'])
+        else:
+            acquisitionera = acquisition_era_name
     except:
         acquisitionera = acquisition_era_name
 
@@ -656,7 +660,7 @@ def publishInDBS3( taskname ):
             # Add this file to the list of files to be published.
             dbsFiles.append(format_file_3(file))
             dbsFiles_f.append(file)
-        print file
+        #print file
         published.append(file['SourceLFN'])
     # Print a message with the number of files to publish.
     msg = "Found %d files not already present in DBS which will be published." % (len(dbsFiles))
@@ -721,7 +725,6 @@ def publishInDBS3( taskname ):
                                         acquisition_era_config, block_config, files_to_publish)
             #logger.debug(wfnamemsg+"Block to insert: %s\n %s" % (blockDump, destApi.__dict__ ))
 
-            # TODO: uncomment to enable publication
             destApi.insertBulkBlock(blockDump)
             block_count += 1
         except Exception as ex:
@@ -756,8 +759,7 @@ def publishInDBS3( taskname ):
             mark_good(workflow, published, oracleDB, logger)
         if failed:
             logger.debug("Failed files: %s " % failed)
-            force_failure = result[dataset].get('force_failure', False)
-            mark_failed(workflow, failed, oracleDB, logger, failure_reason, force_failure)
+            mark_failed(workflow, failed, oracleDB, logger, failure_reason, True)
     except:
         logger.exception("Status update failed")
 

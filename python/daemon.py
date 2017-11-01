@@ -183,40 +183,40 @@ class Worker(object):
         buf = cStringIO.StringIO()
         header = {"Content-Type ": "application/json"}
 
-        # FIXME: with lfn list returns empty
-        #data = {'taskname': workflow, 'filetype': 'EDM', 'lfn': lfn_ready}
-        data = {'taskname': workflow, 'filetype': 'EDM'}
-        url = self.cache_area
-        msg = "Retrieving data from %s" % (url)
-        self.logger.info(wfnamemsg+msg)
-        try:
-            _, res_ = self.connection.request(url, data, header, doseq=True, ckey=self.userProxy, cert=self.userProxy)#, verbose=True)# for debug
-        except Exception as ex:
-            msg = "Error retrieving data."
-            msg += str(ex)
-            msg += str(traceback.format_exc())
-            self.logger.error(wfnamemsg+msg)
-            return {}
-        msg = "Loading results."
-        #print res_
-        self.logger.info(wfnamemsg+msg)
-        try:
-            buf.close()
-            res = json.loads(res_)
-        except Exception as ex:
-            msg = "Error loading results. Trying next time!"
-            msg += str(ex)
-            msg += str(traceback.format_exc())
-            self.logger.error(wfnamemsg+msg)
-            return {}
+        data = {}
+        data['taskname'] = workflow
+        data['filetype'] = 'EDM'
 
         out = []
-        for obj in res['result']:
-            if isinstance(obj, dict):
-                out.append(obj)
-            else:
-                #print type(obj)
-                out.append(json.loads(str(obj)))
+        # divide lfn per chunks, avoiding URI-too long exception
+        def chunks(l, n):
+            """
+            Yield successive n-sized chunks from l.
+            :param l: list to splitt in chunks
+            :param n: chunk size
+            :return: yield the next list chunk
+            """
+            for i in range(0, len(l), n):
+                yield l[i:i + n]
+
+        for  lfn_ in chunks(lfn_ready, 50):
+            data['lfn'] = lfn_
+
+            try:
+                res = self.oracleDB.get('/crabserver/dev/filemetadata',
+                                        data=encodeRequest(data,listParams=["lfn"]))
+                res = res[0]
+            except Exception as ex:
+                self.logger.error("Error during metadata retrieving: %s" %ex)
+
+            print len(res['result'])
+            for obj in res['result']:
+                if isinstance(obj, dict):
+                    out.append(obj)
+                else:
+                    #print type(obj)
+                    out.append(json.loads(str(obj)))
+
         return out
 
     def algorithm(self, parameters=None):
@@ -431,8 +431,8 @@ class Worker(object):
                     publDescFiles_list = self.getPublDescFiles(workflow, lfn_ready)
                     for file_ in active_:
                         for i, doc in enumerate(publDescFiles_list):
-                            logger.info(type(doc))
-                            logger.info(doc)
+                            #logger.info(type(doc))
+                            #logger.info(doc)
                             if doc["lfn"] == file_["value"][2]:
                                 doc["User"] = username
                                 doc["UserDN"] = userDN
@@ -457,4 +457,4 @@ if __name__ == '__main__':
     master = Worker(configuration, False)
     while(True):
         master.algorithm()
-        time.sleep(15)
+        time.sleep(600)
