@@ -8,22 +8,56 @@ import pycurl
 import traceback
 import urllib
 import argparse
+import re
 import datetime
 import dbs.apis.dbsClient as dbsClient
+from utils import getProxy
 from ServerUtilities import getHashLfn, PUBLICATIONDB_STATUSES, encodeRequest, oracleOutputMapping
 from RESTInteractions import HTTPRequests
 
 
-def getProxy(userDN, id_, logger):
+def Proxy(userDN, group, role, logger):
     params = {'DN': userDN}
-    c = pycurl.Curl()
-    c.setopt(c.URL, 'http://127.0.0.1:8443/getproxy'+ '?' + urllib.urlencode(params))
-    with open('userProxy_'+id_, 'w') as f:
-        c.setopt(c.WRITEFUNCTION, f.write)
-        c.perform()
-    c.close()
 
-    return "userProxy"
+    try:
+        serviceCert = '/data/certs/hostcert.pem'
+        serviceKey = '/data/certs/hostkey.pem'
+
+        defaultDelegation = {'logger': logger,
+                             'credServerPath': 'credentials',
+                             'myProxySvr': 'myproxy.cern.ch',
+                             'min_time_left': 36000,
+                             'serverDN': "/DC=ch/DC=cern/OU=computers/CN=vocms0105.cern.ch",
+                             'uisource': "/data/srv/tmp.sh"
+                            }
+
+        cache_area = 'https://cmsweb-testbed.cern.ch/crabserver/preprod/filemetadata'
+        getCache = re.compile('https?://([^/]*)/.*')
+        myproxyAccount = getCache.findall(cache_area)[0]
+        defaultDelegation['myproxyAccount'] = myproxyAccount
+
+        defaultDelegation['server_cert'] = serviceCert
+        defaultDelegation['server_key'] = serviceKey
+
+        valid = False
+        defaultDelegation['userDN'] = userDN
+        defaultDelegation['group'] = group
+        defaultDelegation['role'] = role
+        valid, proxy = getProxy(defaultDelegation, logger)
+    except Exception as ex:
+        msg = "Error getting the user proxy"
+        print msg
+        msg += str(ex)
+        msg += str(traceback.format_exc())
+        logger.error(msg)
+    if valid:
+        userProxy = proxy
+    else:
+        logger.error('Did not get valid proxy.')
+
+    logger.info("%s" % userProxy)
+
+    return userProxy 
 
 def format_file_3(file):
     """
@@ -82,7 +116,9 @@ def migrateByBlockDBS3(workflow, migrateApi, destReadApi, sourceApi, dataset, bl
     If blocks argument is not specified, migrate the whole dataset.
     """
     wfnamemsg = "%s: " % (workflow)
-    logger = app.logger
+    logger = logging.getLogger(workflow)
+    logging.basicConfig(filename=workflow+'.log', level=logging.INFO)
+
     if blocks:
         blocksToMigrate = set(blocks)
     else:
@@ -253,7 +289,9 @@ def requestBlockMigration(workflow, migrateApi, sourceApi, block):
     """
     Submit migration request for one block, checking the request output.
     """
-    logger = app.logger
+    logger = logging.getLogger(workflow)
+    logging.basicConfig(filename=workflow+'.log', level=logging.INFO)
+
     wfnamemsg = "%s: " % workflow
     atDestination = False
     alreadyQueued = False
@@ -410,10 +448,10 @@ def publishInDBS3( taskname ):
     opsProxy = '/data/srv/asyncstageout/state/asyncstageout/creds/OpsProxy'
 
     if not os.path.isfile("userProxy_"+user):
-	    try:
-		proxy = getProxy(userDN, user, logger)
-	    except:
-		logger.exception("Failed to retrieve user proxy")
+        try:
+            proxy = Proxy(userDN, group, role, logger)
+        except:
+            logger.exception("Failed to retrieve user proxy")
 
     logger.info("userProxy_"+user)
     oracelInstance = "vocms035.cern.ch"
